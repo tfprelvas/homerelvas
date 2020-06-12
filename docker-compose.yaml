@@ -1,0 +1,1069 @@
+version: '3.6'
+
+x-logging:
+  &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10g"
+    max-file: "3"
+
+services:
+  parcelos-parcelosdb:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/postgres:9.6-alpine
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+    ports:
+      - 5432:5432
+    volumes:
+      - type: bind
+        source: /home/gls/postgres/data
+        target: /var/lib/postgresql/data
+    hostname: "parcelos-parcelosdb"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d parcelosP1 -U PARCELOS"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    labels:
+      logging.containertype: "postgres"
+      service: "parcelos-parcelosdb"
+      container_version: "9.6-alpine"
+    command: postgres 
+    logging: *default-logging
+
+## For Documentations on RabbitMQ Configuration see
+# https://www.rabbitmq.com/documentation.html
+
+## We have activated the Disk and Memory Alarms according to official website
+# https://www.rabbitmq.com/alarms.html
+
+  rabbit-mq:
+    image: "parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/rabbitmq:3.7.23"
+    volumes:
+      - type: bind
+        source: /home/gls/rabbitmq
+        target: /var/lib/rabbitmq
+      - type: bind
+        source: /home/gls/config/rabbitmq.conf
+        target: /etc/rabbitmq/rabbitmq-parcelos.conf
+    hostname: "rabbit-mq"
+    environment:
+      RABBITMQ_DEFAULT_USER: "parcelosMQ"
+      RABBITMQ_DEFAULT_PASS: "a_H[y7:tKcF]"
+      RABBITMQ_CONFIG_FILE: "/etc/rabbitmq/rabbitmq-parcelos.conf"
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+    restart: unless-stopped
+    healthcheck:
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      test: "rabbitmq-diagnostics -q node_health_check && rabbitmq-diagnostics -q check_port_connectivity || exit 1"
+    labels:
+      logging.containertype: "rabbit-mq"
+      service: "rabbit-mq"
+      container_version: "3.7"
+    logging: *default-logging
+
+  flyway:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/boxfuse/flyway:5.2.1
+    command:  migrate
+    volumes:
+      - /home/gls/flyway/migrations:/flyway/sql
+      - /home/gls/config/:/flyway/conf
+    depends_on:
+      - parcelos-parcelosdb
+    environment:
+      FLYWAY_USER: PARCELOS
+      FLYWAY_PASSWORD: qwz!mnfy10#o
+      FLYWAY_CONFIG_FILES: conf/flyway.conf
+      FLYWAY_CONNECT_RETRIES: 60
+    labels:
+      logging.containertype: "flyway"
+      service: "flyway"
+      container_version: "5.2.1"
+    logging: *default-logging
+
+  parcelos-seedmasterdata:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-seedmasterdata:58.0.0
+    volumes:
+      - type: bind
+        source: /home/gls/config/seedmasterdata-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/seedmasterdata-prod.properties
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-seedmasterdata"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      JAVA_OPTS: "-Xms4096m -Xmx8192m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=512m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/opt/jboss/wildfly/standalone/gc/parcelos-seedmasterdata-gc.log"
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/seedmasterdataservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-seedmasterdata"
+      container_version: "58.0.0"
+    logging: *default-logging
+
+  parcelos-configuration:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-configuration:58.0.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parclos-configuration"
+    depends_on:
+      - fluentd
+      - parcelos-parcelosdb
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/configurationservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-configuration"
+      container_version: "58.0.0"
+    logging: *default-logging
+
+  parcelos-order:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-order:58.0.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-order"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/orderservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-order"
+      container_version: "58.0.0"
+    logging: *default-logging
+
+  parcelos-parcel:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-parcel:58.4.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-parcel"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      DB_CONNECTIONPOOL_MIN: 20
+      DB_CONNECTIONPOOL_MAX: 50
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      JAVA_OPTS: "-Xms2048m -Xmx4096m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=512m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/opt/jboss/wildfly/standalone/gc/parcelos-parcel-gc.log  "
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/parcelservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-parcel"
+      container_version: "58.4.0"
+    logging: *default-logging
+
+  parcelos-parcel-jee-replicationservice:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-parcel-jee-replicationservice:58.4.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-replication"
+    depends_on:
+      - parcelos-parcelosdb
+      - parcelos-user
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      JAVA_OPTS: "-Xms1024m -Xmx2048m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=512m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/opt/jboss/wildfly/standalone/gc/parcelos-parcel-jee-replicationservice-gc.log"
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/replicationservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-parcel-jee-replicationservice"
+      container_version: "58.4.0"
+    logging: *default-logging
+
+  parcelos-partner:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-partner:58.1.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/partner-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/partner-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/lucene
+        target: /opt/jboss/wildfly/lucene
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-partner"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      PARCELOS_PARTNER_ADDRESSEE_SEARCH_CONSUMER_DISABLED: "true"
+      JAVA_OPTS: "-Xms2048m -Xmx4096m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=512m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/opt/jboss/wildfly/standalone/gc/parcelos-partner-gc.log"
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/partnerservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-partner"
+      container_version: "58.1.0"
+    logging: *default-logging
+
+  parcelos-transport:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-transport:58.0.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /home/gls/config/transport-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/transport-prod.properties
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-transport"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      DB_CONNECTIONPOOL_MIN: 20
+      DB_CONNECTIONPOOL_MAX: 50
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      JAVA_OPTS: "-Xms1024m -Xmx2048m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=512m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/opt/jboss/wildfly/standalone/gc/parcelos-transport-gc.log"
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/transportservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-transport"
+      container_version: "58.0.0"
+    logging: *default-logging
+
+  parcelos-geo-stopsequence-generator:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-geo-stopsequence-generator:58.0.0
+    volumes:
+      - type: bind
+        source: /home/gls/geo_stopsequence/geocells
+        target: /parcelos-geo-stopsequence-generator/inputdata/geocells
+      - type: bind
+        source: /home/gls/geo_stopsequence/georouting
+        target: /parcelos-geo-stopsequence-generator/inputdata/georouting
+      - type: bind
+        source: /home/gls/geo_stopsequence/logs
+        target: /parcelos-geo-stopsequence-generator/logs
+      - type: bind
+        source: /home/gls/.ssh/parcelos_geo_sftp_rsa
+        target: /root/.ssh/parcelos_geo_sftp_rsa
+    hostname: "parcelos-geo-stopsequence-generator"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+      - parcelos-seedmasterdata
+      - parcelos-transport
+      - parcelos-partner
+      - parcelos-transport-flow
+      - parcelos-user
+    environment:
+      NODEKEY: parcelos-de-460
+      LOGINNAME: uniqueos.geostopseq
+      PASSWORD: 4MaQl5bqJk
+      SFTP_USER: parcelos_geo_reader
+      SFTP_HOST: parcelos-de-sftp.uniqueos-prd.cloud.gls-group.eu
+    ports:
+      - 8080
+    restart: unless-stopped
+    labels:
+      logging.containertype: "python-cron"
+      service: "parcelos-geo-stopsequence-generator"
+      container_version: "58.0.0"
+    logging: *default-logging
+
+  parcelos-user:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-user:58.4.1
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/user-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/user-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-user"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/userservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-user"
+      container_version: "58.4.1"
+    logging: *default-logging
+
+
+  parcelos-user-flow:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-user-flow:58.2.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/userflow-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/userflow-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+    hostname: "parcelos-user-flow"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+      - parcelos-user
+      - parcelos-legacy-breach
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/userflowservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-user-flow"
+      container_version: "58.2.0"
+    logging: *default-logging
+
+  parcelos-order-flow:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-order-flow:58.0.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-order-flow"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+      - parcelos-transport
+      - parcelos-order
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/orderflowservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-order-flow"
+      container_version: "58.0.0"
+    logging: *default-logging
+
+  parcelos-parcel-flow:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-parcel-flow:58.1.1
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/parcelflow-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/parcelflow-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-parcel-flow"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+      - parcelos-seedmasterdata
+      - parcelos-parcel
+      - parcelos-user
+      - parcelos-legacy-breach
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      DB_CONNECTIONPOOL_MIN: 5
+      DB_CONNECTIONPOOL_MAX: 30
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/parcelflowservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-parcel-flow"
+      container_version: "58.1.1"
+    logging: *default-logging
+
+  parcelos-partner-flow:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-partner-flow:58.1.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/partnerflow-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/partnerflow-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/lucene
+        target: /opt/jboss/wildfly/lucene
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-partner-flow"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+      - parcelos-partner
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/partnerflowservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-partner-flow"
+      container_version: "58.1.0"
+    logging: *default-logging
+
+  parcelos-transport-flow:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-transport-flow:58.1.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/transportflow-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/transportflow-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-transport-flow"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+      - parcelos-seedmasterdata
+      - parcelos-parcel
+      - parcelos-transport
+      - parcelos-partner
+      - parcelos-legacy-breach
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/transportflowservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-transport-flow"
+      container_version: "58.1.0"
+    logging: *default-logging
+
+  
+
+  parcelos-legacy-breach:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-legacy-breach:58.3.1
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/legacybreach-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/legacybreach-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/unique_config.xml
+        target: /opt/jboss/.gls/unique_config.xml
+      - type: bind
+        source: /home/gls/config/ApplicationResources.properties
+        target: /opt/jboss/.gls/ApplicationResources.properties
+      - type: bind
+        source: /home/gls/config/GLSUserSessionData.properties
+        target: /opt/jboss/.gls/GLSUserSessionData.properties
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-legacy-breach"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      JAVA_OPTS: "-Xms1024m -Xmx4096m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=512m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/opt/jboss/wildfly/standalone/gc/parcelos-legacy-breach-gc.log"
+      LOG_LEVEL_EU_GLS_PARCELOS: DEBUG
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/legacybreachservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-legacy-breach"
+      container_version: "58.3.1"
+    logging: *default-logging
+
+  parcelos-integrationplatformimporter:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-integrationplatformimporter:58.1.1
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/integrationplatformimporter-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/integrationplatformimporter-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-integrationplatformimporter"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      PROMETHEUS_ENABLED: "False"
+      INTEGRATIONPLATFORMIMPORTER_NODELOCATIONKEYS: GLS_DE_DE-680
+      JAVA_OPTS: "-Xms1024m -Xmx2048m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/opt/jboss/wildfly/standalone/gc/parcelos-integrationplatformimporter-gc.log"
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/integrationplatformimporterservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-integrationplatformimporter"
+      container_version: "58.1.1"
+    logging: *default-logging
+
+  parcelos-unigatewayimporter:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/parcelos-unigatewayimporter:58.1.0
+    volumes:
+      - type: bind
+        source: /home/gls/certs/parcelos.p12
+        target: /etc/ssl/parcelos.p12
+      - type: bind
+        source: /home/gls/config/prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/prod.properties
+      - type: bind
+        source: /home/gls/config/unigatewayimporter-prod.properties
+        target: /opt/jboss/wildfly/standalone/parcelos-config/unigatewayimporter-prod.properties
+      - type: bind
+        source: /home/gls/config/users.ldif
+        target: /opt/jboss/wildfly/standalone/parcelos-config/users.ldif
+      - type: bind
+        source: /home/gls/config/standalone.xml
+        target: /opt/jboss/wildfly/standalone/configuration/standalone.xml
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /opt/jboss/wildfly/standalone/gc
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    hostname: "parcelos-unigatewayimporter"
+    depends_on:
+      - parcelos-parcelosdb
+      - nginx
+    environment:
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      SPRING_PROFILE: prod
+      INTEGRATIONPLATFORMIMPORTER_NODELOCATIONKEYS: GLS_DE_DE-680
+      DEPENDENCIES_TO_WAIT_FOR:
+    expose:
+      - 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/unigatewayimporterservice/api/v0/health"]
+      interval: 3m0s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    labels:
+      logging.containertype: "wildfly"
+      service: "parcelos-unigatewayimporter"
+      container_version: "58.1.0"
+    logging: *default-logging
+
+  fluentd:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/fluentd-parcelos:v0.2.7
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/gls/config/fluent.conf:/fluentd/etc/fluent.conf
+      - /home/gls/logging/fluentd-es/:/var/log/fluentd/
+      - /export/docker/containers/:/var/log/containers/
+    environment:
+      NODE: parcelos-de-460
+      FLUENT_UID: 0
+      FLUENTD_ES_HOST: vpc-parcelos-prod-jefehyht37tyctmdq6zzklalum.eu-central-1.es.amazonaws.com
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/fluentd/etc/fluentd_health.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      logging.containertype: "fluentd"
+      service: "fluentd"
+      container_version: "v0.2.7"
+    logging: *default-logging
+
+  symetric-ds:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/symmetricds-parcelos:v2.11
+    depends_on:
+      - "flyway"
+    volumes:
+      - type: bind
+        source: /home/gls/logging/gc
+        target: /var/log/gc
+      - type: bind
+        source: /home/gls/symetric-ds/temp
+        target: /opt/symmetric-ds/tmp
+    hostname: "symetric-ds"
+    environment:
+      POSTGRES_HOST: parcelos-parcelosdb
+      POSTGRES_DB: parcelosP1
+      POSTGRES_USER: PARCELOS
+      POSTGRES_PASSWORD: qwz!mnfy10#o
+      REGISTRATION_URL: https://parcelos-de-central.uniqueos-prd.cloud.gls-group.eu/sync/parcelossymetricds
+      SYNC_URL: https://parcelos-de-460.dc.gls-group.eu/sync/parcelossymetricds
+      GROUP_ID: depot
+      EXTERNAL_ID: parcelos-de-460
+      CUSTOM_SYMDS_ARGS: "-Xms1024m -Xmx1024m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=512m -Djava.net.preferIPv4Stack=true -XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:/var/log/gc/symmetric-ds-gc.log"
+    expose:
+      - 8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-O","-", "http://localhost:8080/api/engine/parcelossymetricds/status"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      logging.containertype: "symmetric-ds"
+      service: "symmetricds_parcelos"
+      container_version: "v2.11"
+    logging: *default-logging
+
+  nginx:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/gls-parcelos/nginx-parcelos:1.14-alpine-v0.8
+    ports:
+      - 80:80
+      - 443:443
+    restart: unless-stopped
+    hostname: "parcelos-nginx"
+    environment:
+      DNS_DOMAIN: dc.gls-group.eu
+    volumes:
+      - /home/gls/certs/wildcard.dc.gls-group.eu.pem:/etc/ssl/wildcard.dc.gls-group.eu.pem
+      - /home/gls/certs/wildcard.dc.gls-group.eu.key:/etc/ssl/wildcard.dc.gls-group.eu.key
+      - /home/gls/config/nginx.conf:/etc/nginx/nginx.template
+      - /home/gls/config/proxy.pac:/etc/nginx/html/proxy.pac
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "wget", "-O","-", "--no-check-certificate", "https://localhost"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      logging.containertype: "nginx"
+      service: "nginx"
+      container_version: "1.14-alpine-v0.8"
+    logging: *default-logging
+
+  prometheus:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/prom/prometheus:v2.13.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--storage.tsdb.retention.time=200s"
+    volumes:
+      - /home/gls/prometheus:/prometheus
+      - /home/gls/config/prometheus-depot.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    user: "500:500"
+
+  grafana:
+    image: parcelos-docker.uniqueos-dev.cloud.gls-group.eu/grafana/grafana:6.4.4
+    environment:
+      GF_DEFAULT_INSTANCE_NAME: gls-parcelos
+      GF_ALERTING_ENABLED: "False"
+      GF_ANALYTICS_REPORTING_ENABLED: "False"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "False"
+      GF_USERS_ALLOW_SIGN_UP: "False"
+      GF_AUTH_ANONYMOUS_ENABLED: "True"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_LOG_MODE: console
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      NO_PROXY: prometheus
+    volumes:
+      - /home/gls/grafana:/var/lib/grafana
+      - /home/gls/config/grafana/:/etc/grafana/provisioning/
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    depends_on:
+      - prometheus
